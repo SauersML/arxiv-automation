@@ -87,10 +87,20 @@ def main():
     # If we have search results, try to summarize them and send an email
     if search_results:
         print("\nSummarizing papers with Claude using PDFs...")
-        paper_summaries = summarizer.summarize_papers(search_results)
+        paper_summaries = summarizer.summarize_papers(search_results) # This is a list of PaperData objects
         
         if paper_summaries:
             print(f"✓ Successfully summarized {len(paper_summaries)} papers")
+
+            # Save summaries to files
+            print("\nSaving summaries to files...")
+            for paper_data_with_summary in paper_summaries:
+                # Ensure the object is PaperData and has a summary before saving
+                if hasattr(paper_data_with_summary, 'id') and paper_data_with_summary.summary:
+                    arxiv_client.save_summary_to_file(paper_data_with_summary)
+                else:
+                    print(f"Skipping save for an item as it might not be a valid PaperData with summary.")
+            print("✓ Summaries saved.")
             
             # Try to send an email with the summaries
             print(f"\nSending email to {recipient_email}...")

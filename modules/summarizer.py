@@ -128,12 +128,18 @@ class PaperSummarizer:
         summarized_papers = []
         for paper in tqdm(papers, desc="Summarizing papers", unit="paper"):
             try:
+                # Check if summary already exists
+                if paper.summary and paper.summary.strip():
+                    print(f"Skipping summarization for paper {paper.id} as summary already exists.")
+                    summarized_papers.append(paper)
+                    continue
+
                 if paper.pdf_url:
                     summary = self.summarize_paper(paper.pdf_url)
                     paper.summary = summary
                     summarized_papers.append(paper)
                 else:
-                    print(f"Skipping paper {paper.id} - no PDF URL")
+                    print(f"Skipping paper {paper.id} - no PDF URL, cannot summarize.")
             except Exception as e:
                 print(f"Error summarizing paper {paper.id}: {e}")
                 

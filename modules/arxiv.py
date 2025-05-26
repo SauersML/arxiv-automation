@@ -1,6 +1,6 @@
 """Improved module for interacting with arXiv API using the arxiv package."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import os
 import json
 import arxiv
@@ -22,15 +22,27 @@ class PaperData:
     summary: Optional[str] = None
     categories: Optional[List[str]] = None
 
+    def to_dict(self) -> Dict:
+        """Convert PaperData instance to a dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'PaperData':
+        """Create PaperData instance from a dictionary."""
+        return cls(**data)
+
 class ArxivClient:
     """A client for interacting with the arXiv API with paper tracking."""
     
     SEEN_PAPERS_FILE = "seen_papers.json"
+    SUMMARIES_DIR = "paper_summaries"
     
     def __init__(self):
         """Initialize the arXiv client."""
         self.client = arxiv.Client()
         self.seen_papers = self._load_seen_papers()
+        if not os.path.exists(self.SUMMARIES_DIR):
+            os.makedirs(self.SUMMARIES_DIR)
     
     def _load_seen_papers(self) -> Dict[str, str]:
         """
@@ -55,18 +67,44 @@ class ArxivClient:
                 json.dump(self.seen_papers, f)
         except IOError as e:
             print(f"Warning: Unable to save seen papers file: {e}")
-    
-    def mark_papers_as_seen(self, papers: List[Dict]):
+
+    def _load_summary_from_file(self, paper_id: str) -> Optional[PaperData]:
+        """Load a PaperData object from a JSON summary file if it exists."""
+        summary_filepath = os.path.join(self.SUMMARIES_DIR, f"{paper_id}.json")
+        if os.path.exists(summary_filepath):
+            try:
+                with open(summary_filepath, 'r') as f:
+                    data = json.load(f)
+                    return PaperData.from_dict(data)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Error reading or parsing summary file {summary_filepath}: {e}")
+                return None
+        return None
+
+    def save_summary_to_file(self, paper_data: PaperData):
+        """Save a PaperData object to a JSON summary file."""
+        if not paper_data.summary or not paper_data.summary.strip():
+            return
+
+        summary_filepath = os.path.join(self.SUMMARIES_DIR, f"{paper_data.id}.json")
+        try:
+            with open(summary_filepath, 'w') as f:
+                json.dump(paper_data.to_dict(), f, indent=4)
+            print(f"Saved summary for paper {paper_data.id} to {summary_filepath}")
+        except IOError as e:
+            print(f"Warning: Unable to save summary file {summary_filepath}: {e}")
+            
+    def mark_papers_as_seen(self, papers: List[PaperData]): # Changed type hint from List[Dict]
         """
         Mark papers as seen to avoid duplicates in future searches.
         
         Args:
-            papers: List of paper dictionaries
+            papers: List of paper data objects
         """
         current_date = datetime.now().isoformat()
-        for paper in papers:
-            if paper:
-                self.seen_papers[paper.id] = current_date
+        for paper_data in papers: # Renamed paper to paper_data for clarity
+            if paper_data:
+                self.seen_papers[paper_data.id] = current_date
         self._save_seen_papers()
     
     def _construct_query(self, search_terms: Optional[List[str]] = None, categories: Optional[List[str]] = None) -> str:
@@ -176,13 +214,21 @@ class ArxivClient:
                     
                     # Skip if we've already seen this paper before
                     if paper_id in self.seen_papers or paper_id in seen_in_this_run:
-                        print(f"Skipping already seen paper: {paper.title}")
+                        print(f"Skipping already seen paper: {paper.title} (already processed or in seen_papers.json)")
                         continue
                     
-                    # Convert the paper to our format and add it to the results
-                    paper_data = self._convert_result(paper)
+                    # Try to load from summary file first
+                    existing_summary_paper = self._load_summary_from_file(paper_id)
+                    if existing_summary_paper and existing_summary_paper.summary: # Check if summary exists
+                        print(f"Loaded paper {paper_id} from summary file: {existing_summary_paper.title}")
+                        paper_data = existing_summary_paper
+                    else:
+                        # Convert the paper to our format and add it to the results
+                        print(f"Fetching paper {paper_id} from arXiv: {paper.title}")
+                        paper_data = self._convert_result(paper)
+
                     found_papers.append(paper_data)
-                    seen_in_this_run.add(paper_id)
+                    seen_in_this_run.add(paper_id) # Mark as seen in this run to avoid re-processing in this session
                     new_papers_in_batch += 1
                     
                     print(f"Found new paper: {paper.title}")
@@ -306,13 +352,21 @@ class ArxivClient:
             
             # Skip if we've already seen this paper before
             if paper_id in self.seen_papers or paper_id in seen_in_this_run:
-                print(f"Skipping already seen paper: {paper.title}")
+                print(f"Skipping already seen paper: {paper.title} (already processed or in seen_papers.json)")
                 continue
             
-            # Convert the paper to our format and add it to the results
-            paper_dict = self._convert_result(paper)
-            found_papers.append(paper_dict)
-            seen_in_this_run.add(paper_id)
+            # Try to load from summary file first
+            existing_summary_paper = self._load_summary_from_file(paper_id)
+            if existing_summary_paper and existing_summary_paper.summary: # Check if summary exists
+                print(f"Loaded paper {paper_id} from summary file: {existing_summary_paper.title}")
+                paper_data = existing_summary_paper
+            else:
+                # Convert the paper to our format and add it to the results
+                print(f"Fetching paper {paper_id} from arXiv: {paper.title}")
+                paper_data = self._convert_result(paper) # paper_dict renamed to paper_data
+
+            found_papers.append(paper_data) # paper_dict renamed to paper_data
+            seen_in_this_run.add(paper_id) # Mark as seen in this run
             
             # Check if we have enough papers
             if len(found_papers) >= max_results:
@@ -331,13 +385,30 @@ class ArxivClient:
             paper_id: The arXiv ID of the paper
             
         Returns:
-            dict: A dictionary containing the paper's metadata
+            PaperData: A PaperData object or None
         """
+        # Try to load from summary file first
+        existing_summary_paper = self._load_summary_from_file(paper_id)
+        if existing_summary_paper and existing_summary_paper.summary: # Check if summary exists
+            print(f"Loaded paper {paper_id} from summary file.")
+             # Ensure it's marked in seen_papers if loaded from summary
+            if paper_id not in self.seen_papers:
+                self.seen_papers[paper_id] = datetime.now().isoformat()
+                self._save_seen_papers()
+            return existing_summary_paper
+
+        print(f"Fetching paper {paper_id} from arXiv as no local summary found.")
         search = arxiv.Search(id_list=[paper_id])
         try:
             result = next(self.client.results(search))
-            return self._convert_result(result)
+            paper_data = self._convert_result(result)
+            # Mark as seen if fetched from arXiv
+            if paper_id not in self.seen_papers:
+                 self.seen_papers[paper_id] = datetime.now().isoformat()
+                 self._save_seen_papers()
+            return paper_data
         except StopIteration:
+            print(f"Paper with ID {paper_id} not found on arXiv.")
             return None
     
     def get_pdf_url(self, paper_id):
@@ -364,7 +435,7 @@ class ArxivClient:
             result: An arxiv.Result object
             
         Returns:
-            dict: A dictionary containing paper metadata
+            PaperData: A PaperData object
         """
         # Extract the arXiv ID from the entry ID URL
         arxiv_id = result.entry_id.split('/')[-1]
@@ -393,5 +464,8 @@ class ArxivClient:
         # Add comment if available
         if hasattr(result, 'comment'):
             paper.comment = result.comment
+        
+        # The summary field will be None initially unless loaded from a file.
+        # It will be populated later by a different part of the pipeline.
             
         return paper
